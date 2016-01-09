@@ -37,6 +37,8 @@ class GroupGroup(object):
     object.__init__(self)
     self.things = {}
     self.groups = {}
+    self.filter = None
+    self.filtermode = None
 
     self.ruleHandlers = {
       'common': self.getCommons,
@@ -96,9 +98,30 @@ class GroupGroup(object):
     thing.count(group)
     return thing
 
+  def setFilter(self, group= None, mode= None):
+    if (not group):
+      self.filter = None
+      self.filtermode = None
+      return
+    self.filtermode = mode
+    self.filter = []
+    for name in group:
+      thingid = name.lower()
+      if (thingid in self.things):
+        self.filter.append(thingid)
+
+  def checkFilter(self, thingid):
+    if (not self.filter): return False
+    return (thingid in self.filter) == self.filtermode
+
+  def filterThings(self):
+    for thing in self.things:
+      if (self.checkFilter(thing)): continue
+      yield thing
+
   def getCommons(self, arg):
     commons = {}
-    for thing in self.things:
+    for thing in self.filterThings():
       tcounts = self.things[thing].counts
       if (len(tcounts) in arg):
         commons[thing] = tcounts.keys()
@@ -106,7 +129,7 @@ class GroupGroup(object):
 
   def getDupes(self, arg):
     dupes = {}
-    for thing in self.things:
+    for thing in self.filterThings():
       tcounts = self.things[thing].counts
       counts = {x:tcounts[x] for x in tcounts if tcounts[x] in arg}
       if (counts):
@@ -115,7 +138,7 @@ class GroupGroup(object):
 
   def getUniques(self, arg):
     uniques = {}
-    for thing in self.things:
+    for thing in self.filterThings():
       tcounts = self.things[thing].counts
       if (len(tcounts) == 1 and list(tcounts.values())[0] == 1):
         uniques[thing] = list(tcounts.keys())[0] 
@@ -329,12 +352,15 @@ if (__name__ == '__main__'):
 
   parser = argparse.ArgumentParser()
   
-  # rule options
-  rulegroup = parser.add_argument_group('Filtering Rules')
-  rulegroup.add_argument('-c', '--common', help= 'shows items that some number of lists have in common; syntax is comma separated ranges or items, e.g. 2:5  4,6  2:  :3,5  (default: 2:)', nargs= '?', const= '2', default= False, type= MultiRange, metavar= 'vals')
-  rulegroup.add_argument('-d', '--dupe', help= 'shows items that are duplicated in at least one list some number of times; syntax is the same as -c (default: 2:)', nargs= '?', const= '2:', default= False, type= MultiRange, metavar= 'vals')
-  rulegroup.add_argument('-u', '--unique', action= 'store_true', help= 'shows items that only appear once and in only one list')
-  rulegroup.add_argument('-a', '--all', action= 'store_true', help= 'items must meet all other selected rules to appear in reports')
+  analysisgroup = parser.add_argument_group('Analysis Rules')
+  analysisgroup.add_argument('-c', '--common', help= 'shows items that some number of lists have in common; syntax is comma separated ranges or items, e.g. 2:5  4,6  2:  :3,5  (default: 2:)', nargs= '?', const= '2', default= False, type= MultiRange, metavar= 'vals')
+  analysisgroup.add_argument('-d', '--dupe', help= 'shows items that are duplicated in at least one list some number of times; syntax is the same as -c (default: 2:)', nargs= '?', const= '2:', default= False, type= MultiRange, metavar= 'vals')
+  analysisgroup.add_argument('-u', '--unique', action= 'store_true', help= 'shows items that only appear once and in only one list')
+  analysisgroup.add_argument('-a', '--all', action= 'store_true', help= 'items must meet all other selected rules to appear in reports')
+
+  filteringgroup = parser.add_mutually_exclusive_group()
+  filteringgroup.add_argument('-f', '--blacklist', help= 'sets a given group to function as a blacklist; any things present in the group will not appear in the report', metavar= 'group')
+  filteringgroup.add_argument('-F', '--whitelist', help= 'sets a given group to function as a whitelist; only things present in the group will appear in the report', metavar= 'group')
 
   # report format options
   reportgroup = parser.add_mutually_exclusive_group()
@@ -356,12 +382,39 @@ if (__name__ == '__main__'):
   reportArgs = ['tag']
   reportArgs = {x:vars(args)[x] for x in reportArgs}
 
-  gg = GroupGroup()
+  names, groups = [], []
   for path in args.infiles:
     fp = open(path)
-    names, groups = oneItemPerLineCodec(fp.read())
+    n, g = oneItemPerLineCodec(fp.read())
     fp.close()
-    gg.update(names, groups)
+    names += n
+    groups += g
+
+  filtergroup, filtermode = None, None
+  if (args.whitelist or args.blacklist):
+    groupname = args.whitelist if args.whitelist else args.blacklist
+    groupre = re.compile(re.escape(groupname))
+    inds = []
+    for i in range(len(names)):
+      if (groupre.match(names[i])):
+        inds.append(i)
+    if (len(inds) > 1):
+      sys.stderr.write('error: could not apply whitelist/blacklist\n')
+      error = 'ambiguous substring "%s": multiple groups match (%s)\n' % (groupname, listJoin([names[i] for i in inds]))
+      sys.stderr.write(error)
+      exit(0)
+    elif (len(inds) == 0):
+      sys.stderr.write('error: could not apply whitelist/blacklist')
+      sys.stderr.write('substring "%s" does not match any group in input files' % groupName)
+      exit(0)
+    filtergroup = groups[inds[0]]
+    filtermode = args.blacklist is not None
+    names = names[:inds[0]] + names[inds[0]+1:]
+    groups = groups[:inds[0]] + groups[inds[0]+1:]
+
+  gg = GroupGroup(names, groups)
+  if (args.whitelist or args.blacklist):
+    gg.setFilter(filtergroup, filtermode)
       
   outstream = open(args.out, 'w') if args.out else sys.stdout
 
